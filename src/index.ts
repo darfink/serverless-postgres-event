@@ -216,7 +216,12 @@ class PostgresEventPlugin {
       );
     }
 
-    const client = new Client({ connectionString });
+    const client = new Client({
+      connectionString,
+      // AWS RDS uses a self-signed certificate
+      ssl: { rejectUnauthorized: false },
+    });
+
     await client.connect();
     try {
       await fn(client);
