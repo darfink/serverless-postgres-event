@@ -1,0 +1,24 @@
+{
+  "name": "serverless-postgres-event",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.7.1",
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "@types/pg": "^8.15.5",
+    "@types/serverless": "^3.12.27",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}
