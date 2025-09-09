@@ -16,7 +16,7 @@ type PostgresEvent = {
   when?: string; // optional SQL expression, e.g. "NEW.status = 'PUBLISHED'"
 };
 
-type FunctionWithPostgresEvent = { key: string; trigger: PostgresEvent; arn: string };
+type FunctionWithPostgresEvent = { key: string; trigger: Required<PostgresEvent>; arn: string };
 
 type CustomConfig = {
   connectionString?: string; // or use env PG_CONNECTION_STRING
@@ -109,9 +109,16 @@ class PostgresEventPlugin {
           fn.name,
         );
 
+        const {
+          table,
+          operations,
+          order = 'AFTER',
+          level = 'ROW',
+          when = '',
         // biome-ignore lint/suspicious/noExplicitAny: it's ok
-        const trigger = (match as any).postgres as PostgresEvent;
-        fns.push({ key: fnKey, trigger, arn });
+        } = (match as any).postgres as PostgresEvent;
+
+        fns.push({ key: fnKey, trigger: { table, operations, order, level, when }, arn });
       }
     }
 
