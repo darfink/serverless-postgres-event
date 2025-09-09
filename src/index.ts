@@ -53,7 +53,6 @@ class PostgresEventPlugin {
 
   hooks: Plugin.Hooks = {
     initialize: () => {
-      console.log(this.serverless.getProvider('aws').naming);
       assert(
         this.config.connectionString,
         'Missing Postgres connection string. Set custom.postgres.connectionString or PG_CONNECTION_STRING env var.',
