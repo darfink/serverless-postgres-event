@@ -2,7 +2,8 @@ import assert from 'node:assert';
 import { Client } from 'pg';
 import type Serverless from 'serverless';
 import type Plugin from 'serverless/classes/Plugin';
-import { getLambdaArn, partitionFromRegion, qIdent, slugify, splitQualifiedName } from './helpers';
+import { getLambdaArn, partitionFromRegion, slugify, splitQualifiedName } from './helpers';
+import { sqlCreatePrerequisites, sqlCreateTrigger, sqlDropTrigger } from './sql';
 
 type Op = 'INSERT' | 'UPDATE' | 'DELETE';
 type Order = 'BEFORE' | 'AFTER';
@@ -115,7 +116,7 @@ class PostgresEventPlugin {
           order = 'AFTER',
           level = 'ROW',
           when = '',
-        // biome-ignore lint/suspicious/noExplicitAny: it's ok
+          // biome-ignore lint/suspicious/noExplicitAny: it's ok
         } = (match as any).postgres as PostgresEvent;
 
         fns.push({ key: fnKey, trigger: { table, operations, order, level, when }, arn });
@@ -127,49 +128,7 @@ class PostgresEventPlugin {
 
   private async ensureCoreSql(client: Client) {
     const { namespace, roleName, functionName } = this.config;
-
-    const coreSql = `
-			create extension if not exists pgcrypto;
-			create extension if not exists aws_commons;
-			create extension if not exists aws_lambda;
-
-			do $$
-			begin
-				if not exists (select 1 from pg_roles where rolname = '${roleName}') then
-					create role ${qIdent(roleName)} nologin;
-				end if;
-			end $$;
-
-			grant usage on schema aws_lambda, aws_commons to ${qIdent(roleName)};
-			grant execute on all functions in schema aws_lambda to ${qIdent(roleName)};
-			grant execute on all functions in schema aws_commons to ${qIdent(roleName)};
-
-			create schema if not exists ${qIdent(namespace)};
-
-			create or replace function ${qIdent(namespace)}.${qIdent(functionName)}()
-			returns trigger
-			language plpgsql
-			security definer
-			set search_path = ${qIdent(namespace)}, pg_temp
-			as $$
-			declare
-				arn text := tg_argv[0];
-				payload jsonb := jsonb_build_object(
-					'type', tg_op,
-					'schema', tg_table_schema,
-					'table', tg_table_name,
-					'record', case when tg_op in ('INSERT','UPDATE') then to_jsonb(new) else null end,
-					'old_record', case when tg_op in ('UPDATE','DELETE') then to_jsonb(old) else null end
-				);
-			begin
-				perform aws_lambda.invoke(aws_commons.create_lambda_function_arn(arn), payload::json, 'Event');
-				return null; -- AFTER triggers may return null
-			end;
-			$$;
-
-			alter function ${qIdent(namespace)}.${qIdent(functionName)}() owner to ${qIdent(roleName)};
-		`.trim();
-
+    const coreSql = sqlCreatePrerequisites(roleName, namespace, functionName);
     await client.query(coreSql);
   }
 
@@ -196,22 +155,26 @@ class PostgresEventPlugin {
     const ops = operations.join(' OR ');
     const whenClause = when ? `\n  when (${when})` : '';
     const triggerName = this.buildTriggerName(fn);
-    const argLiteral = `'${fn.arn.replace(/'/g, "''")}'`;
 
-    return `
-			drop trigger if exists ${qIdent(triggerName)} on ${qIdent(tblSchema)}.${qIdent(tblName)} cascade;
-			create trigger ${qIdent(triggerName)}
-				${order} ${ops} on ${qIdent(tblSchema)}.${qIdent(tblName)}
-				for each ${level.toLowerCase()}${whenClause}
-				execute function ${qIdent(namespace)}.${qIdent(this.config.functionName)}(${argLiteral});
-		`.trim();
+    return sqlCreateTrigger(
+      triggerName,
+      tblSchema,
+      tblName,
+      order,
+      ops,
+      level,
+      whenClause,
+      namespace,
+      this.config.functionName,
+      `'${fn.arn.replace(/'/g, "''")}'`,
+    );
   }
 
   private buildDropTriggerSql(fn: FunctionWithPostgresEvent) {
     const { table } = fn.trigger;
     const { schema: tblSchema, name: tblName } = splitQualifiedName(table);
     const triggerName = this.buildTriggerName(fn);
-    return `drop trigger if exists ${qIdent(triggerName)} on ${qIdent(tblSchema)}.${qIdent(tblName)} cascade;`;
+    return sqlDropTrigger(triggerName, tblSchema, tblName);
   }
 
   private async withClient(fn: (client: Client) => Promise<void>): Promise<void> {
