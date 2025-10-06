@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import type Serverless from 'serverless';
 import type Plugin from 'serverless/classes/Plugin';
-import { getHash } from './helpers';
+import { getHash, slugify } from './helpers';
 
 const PLUGIN_NAME = 'serverless-postgres-event';
 const PROVIDER_SOURCE_CODE = fs.readFileSync(
@@ -84,7 +84,19 @@ class PostgresEventPlugin {
   }
 
   private get config() {
-    return this.serverless.service.custom?.[PLUGIN_NAME] ?? {};
+    const config = this.serverless.service.custom?.[PLUGIN_NAME] ?? {};
+    const service = this.serverless.service.getServiceName();
+    const stage = this.serverless.getProvider('aws').getStage();
+    const segments = ['sls', service, stage];
+    const namespace = config.namespace ?? slugify(segments.filter(Boolean).join('_'));
+
+    const {
+      connectionString = process.env.PG_CONNECTION_STRING,
+      roleName = `${namespace}_lambda_invoker`,
+      functionName = 'lambda_invoker',
+    } = config;
+
+    return { connectionString, namespace, roleName, functionName };
   }
 
   private async compilePostgresEvents() {
