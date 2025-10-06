@@ -12,33 +12,15 @@ importers:
         specifier: ^8.16.3
         version: 8.16.3
     devDependencies:
-      '@types/node':
-        specifier: ^24.3.1
-        version: 24.3.1
-      '@types/pg':
-        specifier: ^8.15.5
-        version: 8.15.5
-      '@types/serverless':
-        specifier: ^3.12.27
-        version: 3.12.27
-      typescript:
-        specifier: ^5.9.2
-        version: 5.9.2
-
-  provider:
-    devDependencies:
       '@types/aws-lambda':
         specifier: ^8.10.152
-        version: 8.10.155
+        version: 8.10.152
       '@types/pg':
         specifier: ^8.15.5
         version: 8.15.5
       esbuild:
         specifier: ^0.25.10
         version: 0.25.10
-      pg:
-        specifier: ^8.16.3
-        version: 8.16.3
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -201,17 +183,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@types/aws-lambda@8.10.155':
-    resolution: {integrity: sha512-wd1XgoL0gy/ybo7WozUKQBd+IOgUkdfG6uUGI0fQOTEq06FBFdO7tmPDSxgjkFkl8GlfApvk5TvqZlAl0g+Lbg==}
+  '@types/aws-lambda@8.10.152':
+    resolution: {integrity: sha512-soT/c2gYBnT5ygwiHPmd9a1bftj462NWVk2tKCc1PYHSIacB2UwbTS2zYG4jzag1mRDuzg/OjtxQjQ2NKRB6Rw==}
 
   '@types/node@24.3.1':
     resolution: {integrity: sha512-3vXmQDXy+woz+gnrTvuvNrPzekOi+Ds0ReMxw0LzBiK3a+1k0kQn9f2NWk+lgD4rJehFUmYy2gMhJ2ZI+7YP9g==}
 
   '@types/pg@8.15.5':
     resolution: {integrity: sha512-LF7lF6zWEKxuT3/OR8wAZGzkg4ENGXFNyiV/JeOt9z5B+0ZVwbql9McqX5c/WStFq1GaGso7H1AzP/qSzmlCKQ==}
-
-  '@types/serverless@3.12.27':
-    resolution: {integrity: sha512-3lKSUf+QO3x55isgqkeTNPbhnji7k21yKYeBiegfWrLtsq7U+6i8UBEr08gl8Ihdee3Q1A5Ik9A7ISIVV6z5jA==}
 
   esbuild@0.25.10:
     resolution: {integrity: sha512-9RiGKvCwaqxO2owP61uQ4BgNborAQskMR6QusfWzQqv7AZOg5oGehdY2pRJMTKuwxd1IDBP4rSbI5lHzU7SMsQ==}
@@ -271,11 +250,6 @@ packages:
   split2@4.2.0:
     resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
     engines: {node: '>= 10.x'}
-
-  typescript@5.9.2:
-    resolution: {integrity: sha512-CWBzXQrc/qOkhidw1OzBTQuYRbfyxDXJMVJ1XNwUHGROVmuaeiEm3OslpZ1RV96d7SKKjZKrSJu3+t/xlw3R9A==}
-    engines: {node: '>=14.17'}
-    hasBin: true
 
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
@@ -369,7 +343,7 @@ snapshots:
   '@esbuild/win32-x64@0.25.10':
     optional: true
 
-  '@types/aws-lambda@8.10.155': {}
+  '@types/aws-lambda@8.10.152': {}
 
   '@types/node@24.3.1':
     dependencies:
@@ -380,8 +354,6 @@ snapshots:
       '@types/node': 24.3.1
       pg-protocol: 1.10.3
       pg-types: 2.2.0
-
-  '@types/serverless@3.12.27': {}
 
   esbuild@0.25.10:
     optionalDependencies:
@@ -458,8 +430,6 @@ snapshots:
       xtend: 4.0.2
 
   split2@4.2.0: {}
-
-  typescript@5.9.2: {}
 
   typescript@5.9.3: {}
 

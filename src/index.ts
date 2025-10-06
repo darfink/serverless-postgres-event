@@ -1,29 +1,32 @@
 import assert from 'node:assert';
-import { Client } from 'pg';
+import fs from 'node:fs';
 import type Serverless from 'serverless';
 import type Plugin from 'serverless/classes/Plugin';
-import { getLambdaArn, partitionFromRegion, slugify, splitQualifiedName } from './helpers';
-import { sqlCreatePrerequisites, sqlCreateTrigger, sqlDropTrigger } from './sql';
+import { getHash } from './helpers';
 
-type Op = 'INSERT' | 'UPDATE' | 'DELETE';
-type Order = 'BEFORE' | 'AFTER';
-type Level = 'ROW' | 'STATEMENT';
+const PLUGIN_NAME = 'serverless-postgres-event';
+const PROVIDER_SOURCE_CODE = fs.readFileSync(
+  require.resolve(`${PLUGIN_NAME}/provider/dist/index.js`),
+  'utf-8',
+);
 
-type PostgresEvent = {
+enum Order {
+  Before = 'BEFORE',
+  After = 'AFTER',
+}
+
+enum Level {
+  Row = 'ROW',
+  Statement = 'STATEMENT',
+}
+
+type PostgresEventTriggerDefinition = {
   table: string; // e.g., "public.events"
-  operations: Op[];
+  update?: { columns: string | string[] };
+  delete?: { columns: string | string[] };
+  insert?: { columns: string | string[] };
   order?: Order; // default AFTER
   level?: Level; // default ROW
-  when?: string; // optional SQL expression, e.g. "NEW.status = 'PUBLISHED'"
-};
-
-type FunctionWithPostgresEvent = { key: string; trigger: Required<PostgresEvent>; arn: string };
-
-type CustomConfig = {
-  connectionString?: string; // or use env PG_CONNECTION_STRING
-  namespace?: string; // optional
-  roleName?: string; // optional
-  functionName?: string; // optional
 };
 
 class PostgresEventPlugin {
@@ -34,201 +37,194 @@ class PostgresEventPlugin {
     _options: Serverless.Options,
     private logging: Plugin.Logging,
   ) {
+    this.serverless.configSchemaHandler.defineCustomProperties({
+      type: 'object',
+      properties: {
+        [PLUGIN_NAME]: {
+          type: 'object',
+          properties: {
+            connectionString: { type: 'string' },
+            namespace: { type: 'string' },
+            roleName: { type: 'string' },
+            functionName: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    });
+
+    const properties = {
+      columns: {
+        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+      },
+    };
+
     this.serverless.configSchemaHandler.defineFunctionEvent('aws', 'postgres', {
       type: 'object',
       properties: {
         table: { type: 'string' },
-        operations: {
-          type: 'array',
-          items: { enum: ['INSERT', 'UPDATE', 'DELETE'] },
-          minItems: 1,
-        },
-        order: { enum: ['BEFORE', 'AFTER'], default: 'AFTER' },
-        level: { enum: ['ROW', 'STATEMENT'], default: 'ROW' },
-        when: { type: 'string' },
+        update: { type: 'object', properties },
+        delete: { type: 'object', properties },
+        insert: { type: 'object', properties },
+        order: { enum: Object.values(Order), default: Order.After },
+        level: { enum: Object.values(Level), default: Level.Row },
       },
-      required: ['table', 'operations'],
+      required: ['table'],
       additionalProperties: false,
     });
   }
 
   hooks: Plugin.Hooks = {
-    initialize: () => {
-      assert(
-        this.config.connectionString,
-        'Missing Postgres connection string. Set custom.postgres.connectionString or PG_CONNECTION_STRING env var.',
-      );
-    },
-    'after:deploy:deploy': () => this.applyTriggers(),
-    'after:deploy:function:deploy': () => this.applyTriggers(),
-    'before:remove:remove': () => this.dropTriggers(),
+    'package:compileEvents': () => this.compilePostgresEvents(),
   };
 
   private get log() {
     return this.logging.log;
   }
 
-  private get config(): Required<CustomConfig> {
-    const config =
-      (this.serverless.service.custom as { postgres?: CustomConfig } | undefined)?.postgres || {};
+  private get config() {
+    return this.serverless.service.custom?.[PLUGIN_NAME] ?? {};
+  }
 
-    const service = this.serverless.service.getServiceName();
-    const stage = this.serverless.getProvider('aws').getStage();
-    const segments = ['sls', service, stage];
-    const namespace = config.namespace ?? slugify(segments.filter(Boolean).join('_'));
+  private async compilePostgresEvents() {
+    this.log.info('Compiling Postgres events...');
 
-    // TODO: Support AWS credentials
-    return {
-      connectionString: config.connectionString ?? process.env.PG_CONNECTION_STRING ?? '',
-      functionName: config.functionName ?? `lambda_invoker`,
-      roleName: config.roleName ?? `${namespace}_lambda_invoker`,
-      namespace,
+    const commonProperties = {
+      ProviderCodeHash: getHash(PROVIDER_SOURCE_CODE),
+      Database: {
+        ConnectionString: this.config.connectionString,
+        Namespace: this.config.namespace,
+        RoleName: this.config.roleName,
+        FunctionName: this.config.functionName,
+      },
     };
-  }
 
-  private async getFunctionsWithPostgresEvent(): Promise<FunctionWithPostgresEvent[]> {
     const provider = this.serverless.getProvider('aws');
-    const accountId = await provider.getAccountId();
+    const cfTemplate = this.serverless.service.provider.compiledCloudFormationTemplate;
+    const providerFnLogicalId = this.ensureProviderResources();
 
-    const fns = [];
-    for (const fnKey of this.serverless.service.getAllFunctions()) {
-      const fn = this.serverless.service.getFunction(fnKey);
-      const [match, ...rest] = fn.events.filter((ev) => 'postgres' in ev && ev.postgres);
+    // 1) Shared prerequisites CR
+    const prereqId = 'PostgresPrerequisites';
+    cfTemplate.Resources[prereqId] = {
+      Type: 'Custom::PostgresPrerequisites',
+      DependsOn: [providerFnLogicalId],
+      Properties: {
+        ServiceToken: { 'Fn::GetAtt': [providerFnLogicalId, 'Arn'] },
+        ServiceType: 'Prerequisites',
+        ...commonProperties,
+      },
+    };
 
-      if (rest.length > 0) {
-        throw new Error(
-          `Function "${fnKey}" has ${rest.length + 1} postgres events; only one is supported per function.`,
-        );
+    for (const functionName of this.serverless.service.getAllFunctions()) {
+      const functionConfig = this.serverless.service.getFunction(functionName);
+      const functionPostgresEvents = functionConfig.events
+        .map((ev) => ('postgres' in ev ? ev.postgres : undefined))
+        .filter((ev): ev is PostgresEventTriggerDefinition => ev !== undefined);
+
+      if (functionPostgresEvents.length === 0) {
+        continue;
       }
 
-      if (match) {
-        assert(fn.name, `Function "${fnKey}" has no name.`);
-        const arn = getLambdaArn(
-          partitionFromRegion(provider.getRegion()),
-          provider.getRegion(),
-          accountId,
-          fn.name,
-        );
+      const [postgresEvent] = functionPostgresEvents; // TODO: Support multiple postgres events per function
+      const functionLogicalId = provider.naming.getLambdaLogicalId?.(functionName);
+      const crId = `${provider.naming.getNormalizedFunctionName?.(functionName)}PostgresTrigger`;
 
-        const {
-          table,
-          operations,
-          order = 'AFTER',
-          level = 'ROW',
-          when = '',
-          // biome-ignore lint/suspicious/noExplicitAny: it's ok
-        } = (match as any).postgres as PostgresEvent;
+      assert(functionLogicalId, `Failed to resolve logical ID for function "${functionName}".`);
+      assert(crId, `Unable to resolve postgres trigger logical ID for function "${functionName}".`);
 
-        fns.push({ key: fnKey, trigger: { table, operations, order, level, when }, arn });
-      }
+      cfTemplate.Resources[crId] = {
+        Type: 'Custom::PostgresTrigger',
+        DependsOn: [prereqId, providerFnLogicalId, functionLogicalId],
+        Properties: {
+          ServiceToken: { 'Fn::GetAtt': [providerFnLogicalId, 'Arn'] },
+          ServiceType: 'Trigger',
+          TargetArn: { 'Fn::GetAtt': [functionLogicalId, 'Arn'] },
+          Trigger: postgresEvent,
+          ...commonProperties,
+        },
+      };
     }
-
-    return fns;
   }
 
-  private async ensureCoreSql(client: Client) {
-    const { namespace, roleName, functionName } = this.config;
-    const coreSql = sqlCreatePrerequisites(roleName, namespace, functionName);
-    await client.query(coreSql);
-  }
+  private ensureProviderResources(): string {
+    const aws = this.serverless.getProvider('aws');
+    const naming = aws.naming;
+    const template = this.serverless.service.provider.compiledCloudFormationTemplate;
 
-  private buildTriggerName(fn: FunctionWithPostgresEvent) {
-    const { namespace } = this.config;
-    return [namespace, fn.key].join('_');
-  }
+    // IAM role for the provider Lambda
+    const roleId = 'PostgresProviderRole';
+    template.Resources[roleId] ??= {
+      Type: 'AWS::IAM::Role',
+      Properties: {
+        AssumeRolePolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { Service: ['lambda.amazonaws.com'] },
+              Action: ['sts:AssumeRole'],
+            },
+          ],
+        },
+        Policies: [
+          {
+            PolicyName: `${aws.getStage()}-${this.serverless.service.getServiceName()}-postgres-provider`,
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
+                  Resource: '*',
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
 
-  // Build SQL using the stable id
-  private buildCreateTriggerSql(fn: FunctionWithPostgresEvent) {
-    const { table, operations, order, level, when } = fn.trigger;
+    // Provider Lambda using the copied zip; Serverless uploads it to the deployment bucket
+    const bucketId = naming.getDeploymentBucketLogicalId?.();
+    assert(bucketId, `Failed to resolve logical ID for deployment bucket.`);
 
-    if (order !== 'AFTER') {
-      throw new Error(`Only AFTER triggers are supported; got "${order}" for table ${table}`);
-    }
+    const fnId = 'PostgresProviderLambdaFunction';
+    template.Resources[fnId] = {
+      Type: 'AWS::Lambda::Function',
+      DependsOn: [roleId],
+      Properties: {
+        Runtime: 'nodejs22.x',
+        Handler: 'index.handler',
+        Role: { 'Fn::GetAtt': [roleId, 'Arn'] },
+        Timeout: 60,
+        MemorySize: 256,
+        Code: { ZipFile: PROVIDER_SOURCE_CODE },
+      },
+    };
 
-    if (level !== 'ROW') {
-      throw new Error(`Only ROW triggers are supported; got "${level}" for table ${table}`);
-    }
-
-    const { schema: tblSchema, name: tblName } = splitQualifiedName(table);
-    const { namespace } = this.config;
-
-    const ops = operations.join(' OR ');
-    const whenClause = when ? `\n  when (${when})` : '';
-    const triggerName = this.buildTriggerName(fn);
-
-    return sqlCreateTrigger(
-      triggerName,
-      tblSchema,
-      tblName,
-      order,
-      ops,
-      level,
-      whenClause,
-      namespace,
-      this.config.functionName,
-      `'${fn.arn.replace(/'/g, "''")}'`,
+    // Optional CW Logs group (mirrors Serverless style)
+    const logGroupId = naming.getLogGroupLogicalId?.('PostgresProvider');
+    const logGroupName = naming.getLogGroupName?.(
+      `${this.serverless.service.getServiceName()}-${aws.getStage()}-PostgresProvider`,
     );
-  }
+    const logRetentionInDays =
+      'getLogRetentionInDays' in aws && typeof aws.getLogRetentionInDays === 'function'
+        ? aws.getLogRetentionInDays?.()
+        : 30;
 
-  private buildDropTriggerSql(fn: FunctionWithPostgresEvent) {
-    const { table } = fn.trigger;
-    const { schema: tblSchema, name: tblName } = splitQualifiedName(table);
-    const triggerName = this.buildTriggerName(fn);
-    return sqlDropTrigger(triggerName, tblSchema, tblName);
-  }
+    assert(logGroupId, `Failed to resolve logical ID for log group.`);
+    assert(logGroupName, `Failed to resolve log group name.`);
 
-  private async withClient(fn: (client: Client) => Promise<void>): Promise<void> {
-    const { connectionString } = this.config;
+    template.Resources[logGroupId] = {
+      Type: 'AWS::Logs::LogGroup',
+      Properties: {
+        LogGroupName: logGroupName,
+        RetentionInDays: logRetentionInDays,
+      },
+    };
 
-    if (!connectionString) {
-      throw new Error(
-        'Missing Postgres connection string. Set custom.postgres.connectionString or PG_CONNECTION_STRING env var.',
-      );
-    }
-
-    const client = new Client({
-      connectionString,
-      // AWS RDS uses a self-signed certificate
-      ssl: { rejectUnauthorized: false },
-    });
-
-    await client.connect();
-    try {
-      await fn(client);
-    } finally {
-      await client.end();
-    }
-  }
-
-  async applyTriggers() {
-    this.log.info('Applying RDS Postgres extensions, roles, function, and triggers...');
-
-    await this.withClient(async (client) => {
-      await this.ensureCoreSql(client);
-      for (const fn of await this.getFunctionsWithPostgresEvent()) {
-        this.log.info(
-          `Creating trigger on ${fn.trigger.table} for [${fn.trigger.operations.join(', ')}]`,
-        );
-        await client.query(this.buildCreateTriggerSql(fn));
-      }
-    });
-
-    this.log.info('All triggers created.');
-  }
-
-  async dropTriggers() {
-    this.log.info('Dropping triggers...');
-
-    await this.withClient(async (client) => {
-      for (const fn of await this.getFunctionsWithPostgresEvent()) {
-        this.log.info(
-          `Dropping trigger on ${fn.trigger.table} for [${fn.trigger.operations.join(', ')}]`,
-        );
-        await client.query(this.buildDropTriggerSql(fn));
-      }
-    });
-
-    this.log.info('All triggers dropped.');
+    return fnId;
   }
 }
 
