@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "description": "",
   "main": "dist/index.js",
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "provider/dist/index.zip"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && pnpm -C provider build",
     "watch": "tsc --watch",
-    "prepare": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

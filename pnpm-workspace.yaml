@@ -1,0 +1,4 @@
+packages:
+  - provider
+onlyBuiltDependencies:
+  - esbuild

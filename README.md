@@ -63,6 +63,10 @@ custom:
 
     # Optional overrides:
     # namespace: sls_${self:service}_${sls:stage}     # default: slugified "sls_<service>_<stage>"
+    # postgresRoleName: ${self:custom.postgres.namespace}_lambda_invoker   # Postgres role owning SQL invoker
+    # lambdaInvokerFunctionName: lambda_invoker                             # SQL function that invokes AWS Lambda
+
+    # Deprecated (still supported for backward-compatibility):
     # roleName: ${self:custom.postgres.namespace}_lambda_invoker
     # functionName: lambda_invoker
 ```
@@ -71,8 +75,8 @@ custom:
 - The plugin will:
   - Ensure `pgcrypto`, `aws_commons`, `aws_lambda` extensions exist
   - Create schema `${namespace}` if not present
-  - Create a SQL function `${namespace}.${functionName}()` (owned by `${roleName}`)
-  - Grant required usage/execute permissions to `${roleName}`
+  - Create a SQL function `${namespace}.${lambdaInvokerFunctionName}()` (owned by `${postgresRoleName}`)
+  - Grant required usage/execute permissions to `${postgresRoleName}`
 
 ### 3) Add the `postgres` event to your functions
 ```yaml
@@ -129,7 +133,7 @@ export const main = async (event: {
 ## How it works
 
 - The plugin scans functions for `postgres` events and computes each function’s ARN from the current AWS account/region.
-- It creates a Postgres trigger per event that calls `${namespace}.${functionName}('<lambda-arn>')`.
+- It creates a Postgres trigger per event that calls `${namespace}.${lambdaInvokerFunctionName}('<lambda-arn>')`.
 - The SQL function calls `aws_lambda.invoke(...)` with the JSON payload (event type + row data).
 
 ---
