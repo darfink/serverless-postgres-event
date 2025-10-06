@@ -155,7 +155,8 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
     }
   } catch (err) {
     console.error('❌ Handler error:', err);
-    await respond(event, { PhysicalResourceId: physId!, Error: String(err) }).catch(() => {});
+    const errorPhysId = physId ?? event.LogicalResourceId;
+    await respond(event, { PhysicalResourceId: errorPhysId, Error: String(err) }).catch(() => {});
     throw err;
   }
 };

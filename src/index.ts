@@ -47,6 +47,8 @@ class PostgresEventPlugin {
             namespace: { type: 'string' },
             roleName: { type: 'string' },
             functionName: { type: 'string' },
+            securityGroupIds: { type: 'array', items: { type: 'string' } },
+            subnetIds: { type: 'array', items: { type: 'string' } },
           },
           additionalProperties: false,
         },
@@ -94,9 +96,17 @@ class PostgresEventPlugin {
       connectionString = process.env.PG_CONNECTION_STRING,
       roleName = `${namespace}_lambda_invoker`,
       functionName = 'lambda_invoker',
-    } = config;
+      securityGroupIds = [],
+      subnetIds = [],
+    } = config as {
+      connectionString?: string;
+      roleName?: string;
+      functionName?: string;
+      securityGroupIds?: string[];
+      subnetIds?: string[];
+    };
 
-    return { connectionString, namespace, roleName, functionName };
+    return { connectionString, namespace, roleName, functionName, securityGroupIds, subnetIds };
   }
 
   private async compilePostgresEvents() {
@@ -165,6 +175,12 @@ class PostgresEventPlugin {
     const naming = aws.naming;
     const template = this.serverless.service.provider.compiledCloudFormationTemplate;
 
+    const hasVpcConfig =
+      Array.isArray(this.config.securityGroupIds) &&
+      this.config.securityGroupIds.length > 0 &&
+      Array.isArray(this.config.subnetIds) &&
+      this.config.subnetIds.length > 0;
+
     // IAM role for the provider Lambda
     const roleId = 'PostgresProviderRole';
     template.Resources[roleId] ??= {
@@ -180,6 +196,13 @@ class PostgresEventPlugin {
             },
           ],
         },
+        ...(hasVpcConfig
+          ? {
+              ManagedPolicyArns: [
+                'arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole',
+              ],
+            }
+          : {}),
         Policies: [
           {
             PolicyName: `${aws.getStage()}-${this.serverless.service.getServiceName()}-postgres-provider`,
@@ -213,6 +236,14 @@ class PostgresEventPlugin {
         Timeout: 60,
         MemorySize: 256,
         Code: { ZipFile: PROVIDER_SOURCE_CODE },
+        ...(hasVpcConfig
+          ? {
+              VpcConfig: {
+                SecurityGroupIds: this.config.securityGroupIds,
+                SubnetIds: this.config.subnetIds,
+              },
+            }
+          : {}),
       },
     };
 
