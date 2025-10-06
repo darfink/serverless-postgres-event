@@ -137,9 +137,10 @@ export const createTrigger = async (
   db: DBProps,
   trg: TriggerProps,
   targetArn: string,
+  functionName: string,
 ) => {
   const { schema, name } = splitQualifiedName(trg.table);
-  const triggerName = buildTriggerName(db.Namespace, targetArn);
+  const triggerName = buildTriggerName(db.Namespace, functionName);
   const sql = sqlCreateTrigger(
     triggerName,
     schema,
@@ -157,10 +158,10 @@ export const dropTrigger = async (
   conn: string,
   db: DBProps,
   trg: TriggerProps,
-  targetArn: string,
+  functionName: string,
 ) => {
   const { schema, name } = splitQualifiedName(trg.table);
-  const triggerName = buildTriggerName(db.Namespace, targetArn);
+  const triggerName = buildTriggerName(db.Namespace, functionName);
   await withClient(conn, (c) => c.query(sqlDropTrigger(triggerName, schema, name)));
   return triggerName;
 };

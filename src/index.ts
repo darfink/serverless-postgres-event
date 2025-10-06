@@ -151,6 +151,7 @@ class PostgresEventPlugin {
         Properties: {
           ServiceToken: { 'Fn::GetAtt': [providerFnLogicalId, 'Arn'] },
           ServiceType: 'Trigger',
+          FunctionName: functionName,
           TargetArn: { 'Fn::GetAtt': [functionLogicalId, 'Arn'] },
           Trigger: postgresEvent,
           ...commonProperties,

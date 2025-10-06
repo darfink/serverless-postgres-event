@@ -8,7 +8,7 @@ import type { DBProps, TriggerProps } from './types';
 
 type ResourceProperties = { Database: DBProps } & (
   | { ServiceType: 'Prerequisites' }
-  | { ServiceType: 'Trigger'; Trigger: TriggerProps; TargetArn: string }
+  | { ServiceType: 'Trigger'; Trigger: TriggerProps; TargetArn: string; FunctionName: string }
 );
 
 const respond = async (
@@ -27,11 +27,15 @@ const respond = async (
     ...(data.Error ? { Error: data.Error } : {}),
   };
 
+  console.log(
+    `📤 Sending CFN response: status=${body.Status} physicalId=${body.PhysicalResourceId}`,
+  );
   const res = await fetch(event.ResponseURL, { method: 'PUT', body: JSON.stringify(body) });
 
   if (!res.ok) {
     throw new Error(`CFN response PUT failed: ${res.status} ${res.statusText}`);
   }
+  console.log('✅ CFN response delivered');
 };
 
 export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = async (event) => {
@@ -39,6 +43,7 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
 
   try {
     const props = event.ResourceProperties;
+    console.log(`📨 Event received: requestType=${event.RequestType} service=${props.ServiceType}`);
 
     switch (props.ServiceType) {
       case 'Prerequisites': {
@@ -52,16 +57,26 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
           event.RequestType === 'Create'
             ? props.Database.Namespace
             : event.PhysicalResourceId || props.Database.Namespace;
+        console.log(
+          `🧩 Prerequisites physicalId computed: ${physId} (namespace=${props.Database.Namespace})`,
+        );
 
         switch (event.RequestType) {
           case 'Create':
           case 'Update': {
+            console.log(
+              `🔧 Ensuring prerequisites: role=${props.Database.RoleName} namespace=${props.Database.Namespace} fn=${props.Database.FunctionName}`,
+            );
             await ensurePrereqs(conn, props.Database);
+            console.log('✅ Prerequisites ensured');
             await respond(event, { PhysicalResourceId: physId });
             break;
           }
           case 'Delete': {
             // No-op; leave extensions/role/schema or add cleanup if desired
+            console.log(
+              `🧹 Prerequisites delete requested for namespace=${props.Database.Namespace} (no-op)`,
+            );
             await respond(event, { PhysicalResourceId: physId });
             break;
           }
@@ -70,8 +85,7 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
       }
 
       case 'Trigger': {
-        const trg = props.Trigger;
-        const targetArn = props.TargetArn;
+        const { Trigger: trigger, TargetArn: targetArn, FunctionName: functionName } = props;
 
         if (!targetArn) throw new Error('Missing TargetArn');
 
@@ -82,10 +96,17 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
 
         // Stable physical id based on namespace + lambda name
         physId = buildTriggerName(newDb.Namespace, targetArn);
+        console.log(
+          `🧩 Trigger physicalId computed: ${physId} (table=${trigger.table} namespace=${newDb.Namespace})`,
+        );
 
         switch (event.RequestType) {
           case 'Create': {
-            await createTrigger(newConn, newDb, trg, targetArn);
+            console.log(
+              `🛠️ Creating trigger on table=${trigger.table} for targetArn=...${targetArn.slice(-16)}`,
+            );
+            await createTrigger(newConn, newDb, trigger, targetArn, functionName);
+            console.log(`✅ Trigger created: ${physId}`);
             await respond(event, { PhysicalResourceId: physId });
             break;
           }
@@ -95,23 +116,36 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
             const oldConn = oldDb.ConnectionString;
 
             if (oldConn && oldConn !== newConn) {
-              await dropTrigger(oldConn, oldDb, trg, targetArn).catch((e) =>
-                console.log('Drop trigger in old DB failed (ignored):', (e as Error).message),
+              console.log('🔁 Connection changed; dropping trigger in old DB before recreate');
+              await dropTrigger(oldConn, oldDb, trigger, functionName).catch((e) =>
+                console.warn('⚠️ Drop trigger in old DB failed (ignored):', (e as Error).message),
               );
             } else {
-              await dropTrigger(newConn, newDb, trg, targetArn).catch((e) =>
-                console.log('Drop trigger in new DB failed (ignored):', (e as Error).message),
+              console.log('🔁 Dropping existing trigger in current DB before update');
+              await dropTrigger(newConn, newDb, trigger, functionName).catch((e) =>
+                console.warn(
+                  '⚠️ Drop trigger in current DB failed (ignored):',
+                  (e as Error).message,
+                ),
               );
             }
 
-            await createTrigger(newConn, newDb, trg, targetArn);
+            console.log(
+              `🛠️ Recreating trigger on table=${trigger.table} for targetArn=...${targetArn.slice(-16)}`,
+            );
+            await createTrigger(newConn, newDb, trigger, targetArn, functionName);
+            console.log(`✅ Trigger updated: ${physId}`);
             await respond(event, { PhysicalResourceId: physId });
             break;
           }
           case 'Delete': {
-            await dropTrigger(newConn, newDb, trg, targetArn).catch((e) =>
-              console.log('Drop trigger on delete failed (ignored):', (e as Error).message),
+            console.log(
+              `🗑️ Deleting trigger on table=${trigger.table} for targetArn=...${targetArn.slice(-16)}`,
             );
+            await dropTrigger(newConn, newDb, trigger, functionName).catch((e) =>
+              console.warn('⚠️ Drop trigger on delete failed (ignored):', (e as Error).message),
+            );
+            console.log(`✅ Trigger deleted (if existed): ${physId}`);
             await respond(event, { PhysicalResourceId: physId });
             break;
           }
@@ -120,6 +154,7 @@ export const handler: CloudFormationCustomResourceHandler<ResourceProperties> = 
       }
     }
   } catch (err) {
+    console.error('❌ Handler error:', err);
     await respond(event, { PhysicalResourceId: physId!, Error: String(err) }).catch(() => {});
     throw err;
   }
